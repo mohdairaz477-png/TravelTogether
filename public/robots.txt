@@ -1,0 +1,7 @@
+User-agent: *
+Allow: /
+
+# Block the admin area from search engines
+Disallow: /admin
+
+Sitemap: https://traveltogether.in/sitemap.xml
