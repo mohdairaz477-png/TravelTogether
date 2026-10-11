@@ -34,7 +34,7 @@ export {
   locations,
 } from "../../backend";
 
-const API_URL = "http://localhost:5000";
+const API_URL = "https://traveltogether-api-xjl2.onrender.com";
 
 export async function registerWithMongoDB(data: {
   name: string;
