@@ -93,7 +93,6 @@ profiles, email delivery log, and editable EmailJS configuration.
 | Role | Email | Password |
 |---|---|---|
 | Demo user | `elena@example.com` | `password123` |
-| Admin | `mohdairaz477@gmail.com` | `admin@8520` |
 
 Other demo users (all `password123`): `marcus@example.com`,
 `priya@example.com`, `david@example.com`, `yuki@example.com`
