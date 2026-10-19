@@ -26,6 +26,8 @@ build/
 .env
 .env.*
 .env.example
+backend/.env
+backend/.env.*
 
 # Frontend environment files
 frontend/.env

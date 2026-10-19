@@ -3,6 +3,7 @@ import { Star, MessageCircle, MapPin, Heart, Zap, Globe2, Check, X, Filter, Spar
 import { db } from '../../services/db';
 import type { User, Match } from '../../services/db';
 import { connectionService } from '../../services/connectionService';
+import { mongoConnectionApi, mongoUserApi } from '../../../frontend/api';
 
 interface MatchesProps {
   user: User;
@@ -18,16 +19,22 @@ export default function MatchesView({ user, onNavigate, onViewProfile }: Matches
   const [showMessageBox, setShowMessageBox] = useState<string | null>(null);
   const [requestMessage, setRequestMessage] = useState('');
   const [connectionRequests, setConnectionRequests] = useState<any[]>([]);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchedUser, setSearchedUser] = useState<any | null>(null);
+  const [searchError, setSearchError] = useState('');
+  const [searching, setSearching] = useState(false);
+  const [searchMessage, setSearchMessage] = useState('');
 
   // Track connection requests
   useEffect(() => {
-    const refresh = () => {
-      const reqs = connectionService.getRequests();
-      setConnectionRequests(reqs);
+    let alive = true;
+    const refresh = async () => {
+      try { const result = await mongoConnectionApi.list(); if (alive) setConnectionRequests(result.requests || []); }
+      catch { if (alive) setConnectionRequests([]); }
     };
-    refresh();
+    void refresh();
     window.addEventListener('connection-updated', refresh);
-    return () => window.removeEventListener('connection-updated', refresh);
+    return () => { alive = false; window.removeEventListener('connection-updated', refresh); };
   }, []);
 
   const filteredMatches = matches.filter(m => {
@@ -45,20 +52,44 @@ export default function MatchesView({ user, onNavigate, onViewProfile }: Matches
     return existing.status;
   };
 
-  const handleConnect = (match: Match) => {
+  const handleConnect = async (match: Match) => {
     if (showMessageBox === match.userId) {
-      // Actually send the request
-      connectionService.sendRequest(
-        user._id, user.name, user.avatar,
-        match.userId, match.userName, match.userAvatar,
-        match.matchScore, requestMessage
-      );
-      setContacted(prev => new Set(prev).add(match.userId));
-      setShowMessageBox(null);
-      setRequestMessage('');
+      try {
+        await mongoConnectionApi.send({ toUserId: match.userId, matchScore: match.matchScore, message: requestMessage });
+        setContacted(prev => new Set(prev).add(match.userId));
+        setShowMessageBox(null); setRequestMessage('');
+        window.dispatchEvent(new Event('connection-updated'));
+      } catch (error) {
+        window.alert(error instanceof Error ? error.message : 'Could not send request.');
+      }
+    } else setShowMessageBox(match.userId);
+  };
+
+  const searchUsersByName = async () => {
+    setSearchError(''); setSearchMessage(''); setSearchedUser(null);
+    const query = searchQuery.trim();
+    if (query.length < 2) { setSearchError('Enter at least 2 characters to search.'); return; }
+    setSearching(true);
+    try {
+      const result = await mongoUserApi.searchByName(query);
+      const users = result.users || [];
+      if (!users.length) { setSearchError('No travellers found. Try another name or username.'); return; }
+      setSearchedUser(users[0]);
+      if (users.length > 1) setSearchMessage(`Showing the first match out of ${users.length} results. Use a more specific name to narrow the search.`);
+    } catch (error) {
+      setSearchError(error instanceof Error ? error.message : 'Could not search for this user.');
+    } finally { setSearching(false); }
+  };
+
+  const sendRequestToSearchedUser = async () => {
+    if (!searchedUser) return;
+    try {
+      await mongoConnectionApi.send({ toUserId: searchedUser._id, message: requestMessage });
+      setSearchMessage('Connection request sent successfully.');
+      setSearchedUser(null); setSearchQuery(''); setRequestMessage(''); setShowMessageBox(null);
       window.dispatchEvent(new Event('connection-updated'));
-    } else {
-      setShowMessageBox(match.userId);
+    } catch (error) {
+      setSearchError(error instanceof Error ? error.message : 'Could not send request.');
     }
   };
 
@@ -67,13 +98,10 @@ export default function MatchesView({ user, onNavigate, onViewProfile }: Matches
       r.fromUserId === user._id && r.toUserId === match.userId && r.status === 'pending'
     );
     if (req) {
-      connectionService.cancelRequest(req._id);
-      setContacted(prev => {
-        const next = new Set(prev);
-        next.delete(match.userId);
-        return next;
-      });
-      window.dispatchEvent(new Event('connection-updated'));
+      void mongoConnectionApi.cancel(req._id).then(() => {
+        setContacted(prev => { const next = new Set(prev); next.delete(match.userId); return next; });
+        window.dispatchEvent(new Event('connection-updated'));
+      }).catch(error => window.alert(error instanceof Error ? error.message : 'Could not cancel request.'));
     }
   };
 
@@ -123,6 +151,45 @@ export default function MatchesView({ user, onNavigate, onViewProfile }: Matches
         </button>
       </div>
 
+      {/* Search travellers by username or name */}
+      <section className="glass-card rounded-2xl p-5 space-y-3">
+        <div>
+          <h2 className="text-lg font-semibold text-white flex items-center gap-2"><Users className="w-5 h-5 text-blue-400" /> Search by Name or Username</h2>
+          <p className="text-sm text-white/40 mt-1">Search by a traveller's name, username, or email to find them and send a connection request.</p>
+        </div>
+        <form className="flex flex-col sm:flex-row gap-2" onSubmit={(e) => { e.preventDefault(); void searchUsersByName(); }}>
+          <input value={searchQuery} onChange={e => { setSearchQuery(e.target.value); setSearchedUser(null); setSearchError(''); setSearchMessage(''); }} placeholder="Enter name or username (e.g. airzy)" className="flex-1 min-w-0 px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white placeholder-white/30 text-sm focus:outline-none focus:border-blue-500/50" />
+          <button type="submit" disabled={searching} className="px-5 py-3 rounded-xl btn-primary text-sm font-semibold text-white disabled:opacity-50">{searching ? 'Searching…' : 'Search'}</button>
+        </form>
+        {searchError && <p role="alert" className="text-sm text-red-300">{searchError}</p>}
+        {searchMessage && <p role="status" className="text-sm text-emerald-300">{searchMessage}</p>}
+        {searchedUser && (
+          <div className="flex flex-col sm:flex-row sm:items-center gap-4 rounded-xl border border-white/10 bg-white/[0.03] p-4">
+            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center text-white font-bold">{String(searchedUser.name || 'T').charAt(0).toUpperCase()}</div>
+            <div className="flex-1 min-w-0">
+              <p className="font-semibold text-white">{searchedUser.name}</p>
+              <p className="text-xs text-white/50">{searchedUser.username ? `@${searchedUser.username}` : searchedUser.email || "Traveller"}</p>
+              <p className="text-xs text-white/40 mt-1">⭐ {searchedUser.rating || 0} rating · {searchedUser.tripCount || 0} trips</p>
+            </div>
+            {getConnectionStatus(searchedUser._id) === 'accepted' ? (
+              <span className="text-sm text-emerald-300">Already connected</span>
+            ) : getConnectionStatus(searchedUser._id) === 'pending' ? (
+              <span className="text-sm text-amber-300">Request already pending</span>
+            ) : showMessageBox === searchedUser._id ? (
+              <div className="w-full sm:max-w-sm space-y-2">
+                <textarea value={requestMessage} onChange={e => setRequestMessage(e.target.value)} placeholder="Add a message (optional)" rows={2} className="w-full px-3 py-2 rounded-lg bg-white/5 border border-white/10 text-white placeholder-white/30 text-sm focus:outline-none focus:border-pink-500/50" />
+                <div className="flex gap-2">
+                  <button type="button" onClick={() => void sendRequestToSearchedUser()} className="flex-1 btn-primary px-3 py-2 rounded-lg text-sm font-semibold text-white"><Send className="inline w-4 h-4 mr-1" /> Send Request</button>
+                  <button type="button" onClick={() => { setShowMessageBox(null); setRequestMessage(''); }} className="px-3 py-2 rounded-lg bg-white/5 text-white/60 text-sm">Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button type="button" onClick={() => { setShowMessageBox(searchedUser._id); setRequestMessage(''); }} className="px-4 py-2.5 rounded-xl btn-primary text-sm font-semibold text-white"><Heart className="inline w-4 h-4 mr-1" /> Send Request</button>
+            )}
+          </div>
+        )}
+      </section>
+
       {/* Algorithm Info */}
       <div className="reveal glass-card rounded-2xl p-5">
         <div className="flex items-start gap-4">
@@ -135,7 +202,7 @@ export default function MatchesView({ user, onNavigate, onViewProfile }: Matches
               <Shield className="w-4 h-4 text-emerald-400" />
             </h3>
             <p className="text-sm text-white/50 leading-relaxed">
-              Our AI analyzes your interests, travel style, budget, pace, and personality traits 
+              Our AI analyzes your interests, travel style, budget, pace, and personality traits
               to find the most compatible travel companions.
             </p>
             <div className="flex flex-wrap gap-2 mt-3">
@@ -153,14 +220,13 @@ export default function MatchesView({ user, onNavigate, onViewProfile }: Matches
       <div className="flex flex-wrap items-center gap-3">
         <button
           onClick={() => setShowFilters(!showFilters)}
-          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-            showFilters ? 'bg-blue-500/10 text-blue-400 border border-blue-500/30' : 'bg-white/5 text-white/40 border border-white/10'
-          }`}
+          className={`flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-medium transition-all ${showFilters ? 'bg-blue-500/10 text-blue-400 border border-blue-500/30' : 'bg-white/5 text-white/40 border border-white/10'
+            }`}
         >
           <Filter className="w-4 h-4" />
           Filters
         </button>
-        
+
         <div className="flex items-center gap-2">
           {[
             { key: 'all' as const, label: 'All', count: matches.length, color: 'blue' },
@@ -170,16 +236,14 @@ export default function MatchesView({ user, onNavigate, onViewProfile }: Matches
             <button
               key={f.key}
               onClick={() => setFilter(f.key)}
-              className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 ${
-                filter === f.key
+              className={`px-4 py-2 rounded-xl text-sm font-medium transition-all flex items-center gap-2 ${filter === f.key
                   ? `${f.color === 'emerald' ? 'bg-emerald-500/15 text-emerald-400 border-emerald-500/30' : f.color === 'amber' ? 'bg-amber-500/15 text-amber-400 border-amber-500/30' : 'bg-blue-500/15 text-blue-400 border-blue-500/30'} border`
                   : 'bg-white/5 text-white/40 border border-white/10 hover:bg-white/10'
-              }`}
+                }`}
             >
               {f.label}
-              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${
-                filter === f.key ? 'bg-white/10' : 'bg-white/5'
-              }`}>
+              <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded-md ${filter === f.key ? 'bg-white/10' : 'bg-white/5'
+                }`}>
                 {f.count}
               </span>
             </button>
@@ -254,11 +318,10 @@ export default function MatchesView({ user, onNavigate, onViewProfile }: Matches
                         <MapPin className="w-3 h-3 text-blue-400" />{match.userLocation}
                       </p>
                     </div>
-                    <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${
-                      match.matchScore >= 90 ? 'bg-emerald-400/10 text-emerald-400' :
-                      match.matchScore >= 80 ? 'bg-green-400/10 text-green-400' :
-                      'bg-amber-400/10 text-amber-400'
-                    }`}>
+                    <span className={`px-2 py-1 rounded-lg text-[10px] font-bold uppercase tracking-wider ${match.matchScore >= 90 ? 'bg-emerald-400/10 text-emerald-400' :
+                        match.matchScore >= 80 ? 'bg-green-400/10 text-green-400' :
+                          'bg-amber-400/10 text-amber-400'
+                      }`}>
                       {getScoreLabel(match.matchScore)}
                     </span>
                   </div>
@@ -352,7 +415,11 @@ export default function MatchesView({ user, onNavigate, onViewProfile }: Matches
                           <Heart className="w-3.5 h-3.5" />
                           Send Request
                         </button>
-                        <button className="p-2.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-colors">
+                        <button
+                          onClick={() => onNavigate('chat')}
+                          title="Open Chat"
+                          className="p-2.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 transition-colors"
+                        >
                           <MessageCircle className="w-4 h-4 text-white/50" />
                         </button>
                       </div>

@@ -1,6 +1,7 @@
-import { useState } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Heart, UserPlus, Check, X, MessageCircle, Clock, UserCheck } from 'lucide-react';
-import { connectionService } from '../../services/connectionService';
+import { mongoConnectionApi } from '../../../frontend/api';
+import type { ConnectionRequest } from '../../../backend';
 
 interface ConnectionRequestsProps {
   userId: string;
@@ -12,30 +13,40 @@ export default function ConnectionRequests({ userId, onNavigate, onViewProfile }
   const [activeTab, setActiveTab] = useState<'received' | 'sent' | 'connections'>('received');
   const [responseMessage, setResponseMessage] = useState('');
   const [showResponseBox, setShowResponseBox] = useState<string | null>(null);
+  const [requests, setRequests] = useState<ConnectionRequest[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [actionError, setActionError] = useState('');
 
-  const received = connectionService.getReceivedRequests(userId);
-  const sent = connectionService.getSentRequests(userId);
-  const connections = connectionService.getConnections(userId);
+  const refreshRequests = useCallback(async () => {
+    try {
+      const result = await mongoConnectionApi.list();
+      setRequests((result.requests || []).map((r: any) => ({ ...r,
+        fromUserId: String(r.fromUserId), toUserId: String(r.toUserId),
+        respondedAt: r.respondedAt || null, responseMessage: r.responseMessage || null,
+      })));
+      setActionError('');
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : 'Could not load requests.');
+    } finally { setLoading(false); }
+  }, []);
+  useEffect(() => { void refreshRequests(); }, [refreshRequests]);
+
+  const received = requests.filter(r => r.toUserId === userId && r.status === 'pending');
+  const sent = requests.filter(r => r.fromUserId === userId && r.status === 'pending');
+  const connections = requests.filter(r => (r.fromUserId === userId || r.toUserId === userId) && r.status === 'accepted');
   const pendingCount = received.length;
 
-  const handleAccept = (requestId: string) => {
-    connectionService.acceptRequest(requestId, responseMessage);
-    setShowResponseBox(null);
-    setResponseMessage('');
-    // Force re-render
-    window.dispatchEvent(new Event('connection-updated'));
+  const handleAccept = async (requestId: string) => {
+    try { await mongoConnectionApi.respond(requestId, 'accepted', responseMessage); await refreshRequests(); setShowResponseBox(null); setResponseMessage(''); }
+    catch (error) { setActionError(error instanceof Error ? error.message : 'Could not accept request.'); }
   };
-
-  const handleReject = (requestId: string) => {
-    connectionService.rejectRequest(requestId, responseMessage);
-    setShowResponseBox(null);
-    setResponseMessage('');
-    window.dispatchEvent(new Event('connection-updated'));
+  const handleReject = async (requestId: string) => {
+    try { await mongoConnectionApi.respond(requestId, 'rejected', responseMessage); await refreshRequests(); setShowResponseBox(null); setResponseMessage(''); }
+    catch (error) { setActionError(error instanceof Error ? error.message : 'Could not decline request.'); }
   };
-
-  const handleCancel = (requestId: string) => {
-    connectionService.cancelRequest(requestId);
-    window.dispatchEvent(new Event('connection-updated'));
+  const handleCancel = async (requestId: string) => {
+    try { await mongoConnectionApi.cancel(requestId); await refreshRequests(); }
+    catch (error) { setActionError(error instanceof Error ? error.message : 'Could not cancel request.'); }
   };
 
   const timeAgo = (timestamp: string) => {
@@ -48,6 +59,8 @@ export default function ConnectionRequests({ userId, onNavigate, onViewProfile }
 
   return (
     <div className="space-y-4">
+      {actionError && <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-3 text-sm text-amber-200">{actionError}</div>}
+      {loading && <p className="text-sm text-white/40">Loading your requests from the server…</p>}
       {/* Tabs */}
       <div className="flex items-center gap-1 bg-white/5 rounded-xl p-1 border border-white/5">
         <button

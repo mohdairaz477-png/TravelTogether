@@ -70,6 +70,7 @@ const handleSubmit = async (e: React.FormEvent) => {
 
     const user = {
       ...apiUser,
+      _isAdmin: apiUser.isAdmin === true,
       _id: apiUser.id,
       avatar: 'from-violet-400 to-blue-600',
       age: 25,

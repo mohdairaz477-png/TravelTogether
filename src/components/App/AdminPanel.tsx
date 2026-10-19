@@ -5,13 +5,17 @@ import type { AdminNotification } from '../../services/locations';
 import { adminService } from '../../services/locations';
 import { emailService } from '../../services/emailService';
 import UserProfileView from './UserProfileView';
+import { mongoAdminApi } from '../../../frontend/api';
 
 interface AdminPanelProps {
   onLogout: () => void;
+  currentUser: any;
 }
 
-export default function AdminPanel({ onLogout }: AdminPanelProps) {
+export default function AdminPanel({ onLogout, currentUser }: AdminPanelProps){
   const [notifications, setNotifications] = useState<AdminNotification[]>([]);
+  const [allUsers, setAllUsers] = useState<any[]>([]);
+  const [adminDataError, setAdminDataError] = useState('');
   const [activeTab, setActiveTab] = useState<'notifications' | 'users' | 'email' | 'settings'>('notifications');
   const [viewProfileUserId, setViewProfileUserId] = useState<string | null>(null);
   const [filter, setFilter] = useState<'all' | 'login' | 'signup'>('all');
@@ -41,14 +45,36 @@ export default function AdminPanel({ onLogout }: AdminPanelProps) {
   }, []);
 
   useEffect(() => {
-    setNotifications(adminService.getNotifications());
-    const interval = setInterval(() => setNotifications(adminService.getNotifications()), 3000);
-    return () => clearInterval(interval);
+    let alive = true;
+    const loadAdminData = async () => {
+      try {
+        const [usersResult, notificationsResult] = await Promise.all([
+          mongoAdminApi.users(), mongoAdminApi.notifications(),
+        ]);
+        if (!alive) return;
+        setAllUsers(usersResult.users || []);
+        setNotifications((notificationsResult.notifications || []).map((n: any) => ({
+          id: String(n._id), type: n.type, userId: n.userId, userName: n.userName,
+          userEmail: n.userEmail, timestamp: n.createdAt || n.timestamp,
+          message: n.message, read: !!n.read,
+        })));
+        setAdminDataError('');
+      } catch (error) {
+        if (alive) setAdminDataError(error instanceof Error ? error.message : 'Could not load admin data.');
+      }
+    };
+    void loadAdminData();
+    const interval = setInterval(() => { void loadAdminData(); }, 15000);
+    return () => { alive = false; clearInterval(interval); };
   }, []);
 
-  const markAllRead = () => {
-    adminService.markAllRead();
-    setNotifications(adminService.getNotifications());
+  const markAllRead = async () => {
+    try {
+      await mongoAdminApi.markAllRead();
+      setNotifications(current => current.map(n => ({ ...n, read: true })));
+    } catch (error) {
+      setAdminDataError(error instanceof Error ? error.message : 'Could not mark notifications read.');
+    }
   };
 
   const markRead = (id: string) => {
@@ -56,17 +82,24 @@ export default function AdminPanel({ onLogout }: AdminPanelProps) {
     setNotifications(adminService.getNotifications());
   };
 
-  const clearAll = () => {
-    adminService.clearAll();
+ const clearAll = async () => {
+  if (!window.confirm('Delete all admin notifications? This cannot be undone.')) {
+    return;
+  }
+
+  try {
+    setAdminDataError('');
+    await mongoAdminApi.clearAllNotifications();
     setNotifications([]);
-  };
+  } catch (error) {
+    setAdminDataError(
+      error instanceof Error ? error.message : 'Could not clear notifications.'
+    );
+  }
+};
 
   const filtered = notifications.filter(n => filter === 'all' ? true : n.type === filter);
 
-  const allUsers = (() => {
-    const stored = localStorage.getItem('tt_users');
-    return stored ? JSON.parse(stored) : [];
-  })();
 
   const unreadCount = notifications.filter(n => !n.read).length;
   const loginCount = notifications.filter(n => n.type === 'login').length;
@@ -609,7 +642,7 @@ export default function AdminPanel({ onLogout }: AdminPanelProps) {
         {viewProfileUserId && (
           <UserProfileView
             targetUserId={viewProfileUserId}
-            currentUser={{ _id: 'admin_001', name: 'Mohd Airaz', email: 'mohdairaz477@gmail.com', avatar: 'from-amber-500 to-orange-600', age: 25, location: 'India', bio: 'Admin', interests: [], travelStyle: [], budget: 'high' as any, pace: 'moderate' as any, verified: true, rating: 5.0, tripCount: 0, joinedAt: '2024-01-01', plan: 'nomad' as any, password: '' }}
+           currentUser={currentUser}
             onClose={() => setViewProfileUserId(null)}
             onNavigate={() => {}}
             isAdmin={true}

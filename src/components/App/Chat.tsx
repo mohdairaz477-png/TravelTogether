@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { MessageSquare, Search, Send, Users, ChevronLeft, Smile, Paperclip, Image, Mic } from 'lucide-react';
 import { db } from '../../services/db';
+import { mongoConnectionApi, mongoDirectMessageApi } from '../../../frontend/api';
 import type { Trip, Message as MessageType, User } from '../../services/db';
 
 interface ChatProps {
@@ -13,6 +14,12 @@ export default function Chat({ user, onViewProfile, onNavigate }: ChatProps) {
   const emojiList = ['😊', '❤️', '🎉', '🔥', '👍', '😂', '🤩', '🙌', '💪', '✨', '🌟', '🎊', '🥳', '😎', '🤝', '🌍', '✈️', '🏖️', '🍕', '🎵'];
 
   const [selectedTrip, setSelectedTrip] = useState<Trip | null>(null);
+  const [activeTab, setActiveTab] = useState<'trips' | 'personal'>('trips');
+  const [connectedUsers, setConnectedUsers] = useState<Array<{ _id: string; name: string; avatar: string }>>([]);
+  const [selectedDirectUser, setSelectedDirectUser] = useState<{ _id: string; name: string; avatar: string } | null>(null);
+  const [directMessages, setDirectMessages] = useState<Array<{ _id: string; senderId: string; recipientId: string; content: string; createdAt: string }>>([]);
+  const [directError, setDirectError] = useState('');
+  const [sendingDirect, setSendingDirect] = useState(false);
   const [messages, setMessages] = useState<MessageType[]>([]);
   const [newMessage, setNewMessage] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -22,6 +29,38 @@ export default function Chat({ user, onViewProfile, onNavigate }: ChatProps) {
   const userTrips = db.tripFindAll().filter(t => t.members.includes(user._id));
 
   useEffect(() => {
+    let alive = true;
+    const loadConnections = async () => {
+      try {
+        const result = await mongoConnectionApi.list();
+        const accepted = (result.requests || []).filter((r: any) => r.status === 'accepted');
+        const people = accepted.map((r: any) => {
+          const isFrom = String(r.fromUserId) === String(user._id);
+          return { _id: String(isFrom ? r.toUserId : r.fromUserId), name: isFrom ? r.toUserName : r.fromUserName, avatar: isFrom ? r.toUserAvatar : r.fromUserAvatar };
+        }).filter((person: any, index: number, all: any[]) => person._id && person._id !== String(user._id) && all.findIndex((p: any) => p._id === person._id) === index);
+        if (alive) setConnectedUsers(people);
+      } catch (error) { if (alive) setDirectError(error instanceof Error ? error.message : 'Could not load connections.'); }
+    };
+    void loadConnections();
+    window.addEventListener('connection-updated', loadConnections);
+    return () => { alive = false; window.removeEventListener('connection-updated', loadConnections); };
+  }, [user._id]);
+
+  useEffect(() => {
+    if (!selectedDirectUser) return;
+    let alive = true;
+    const loadMessages = async () => {
+      try {
+        const result = await mongoDirectMessageApi.list(selectedDirectUser._id);
+        if (alive) { setDirectMessages(result.messages || []); setDirectError(''); }
+      } catch (error) { if (alive) setDirectError(error instanceof Error ? error.message : 'Could not load messages.'); }
+    };
+    void loadMessages();
+    const interval = window.setInterval(loadMessages, 3000);
+    return () => { alive = false; window.clearInterval(interval); };
+  }, [selectedDirectUser?._id]);
+
+  useEffect(() => {
     if (selectedTrip) {
       setMessages(db.messageFindByTrip(selectedTrip._id));
     }
@@ -29,7 +68,7 @@ export default function Chat({ user, onViewProfile, onNavigate }: ChatProps) {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, directMessages]);
 
   const sendMessage = () => {
     if (!newMessage.trim() || !selectedTrip) return;
@@ -45,6 +84,18 @@ export default function Chat({ user, onViewProfile, onNavigate }: ChatProps) {
     setShowEmojiPicker(false);
   };
 
+  const sendDirectMessage = async () => {
+    if (!selectedDirectUser || !newMessage.trim() || sendingDirect) return;
+    const content = newMessage.trim();
+    setSendingDirect(true); setDirectError('');
+    try {
+      const result = await mongoDirectMessageApi.send(selectedDirectUser._id, content);
+      if (result.message) setDirectMessages(prev => [...prev, result.message]);
+      setNewMessage(''); setShowEmojiPicker(false);
+    } catch (error) { setDirectError(error instanceof Error ? error.message : 'Could not send message.'); }
+    finally { setSendingDirect(false); }
+  };
+
   const addEmoji = (emoji: string) => {
     setNewMessage(prev => prev + emoji);
   };
@@ -56,14 +107,14 @@ export default function Chat({ user, onViewProfile, onNavigate }: ChatProps) {
   return (
     <div className="flex min-h-[calc(100vh-60px)]">
       {/* Trip List Sidebar */}
-      <div className={`${selectedTrip ? 'hidden lg:flex' : 'flex'} flex-col w-full lg:w-80 border-r border-white/5`}>
+      <div className={`${(selectedTrip || selectedDirectUser) ? 'hidden lg:flex' : 'flex'} flex-col w-full lg:w-80 border-r border-white/5`}>
         {/* Search */}
         <div className="p-4 border-b border-white/5">
           <div className="relative">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/30" />
             <input
               type="text"
-              placeholder="Search trips..."
+              placeholder={activeTab === 'trips' ? 'Search trips...' : 'Search connected users...'}
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
               className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-white/5 border border-white/10 text-white placeholder-white/30 focus:outline-none focus:border-blue-500/50 text-sm transition-colors"
@@ -71,9 +122,28 @@ export default function Chat({ user, onViewProfile, onNavigate }: ChatProps) {
           </div>
         </div>
 
-        {/* Trip List */}
+        <div className="grid grid-cols-2 gap-2 p-3 border-b border-white/5">
+          <button onClick={() => { setActiveTab('trips'); setSelectedDirectUser(null); setSelectedTrip(null); }} className={`rounded-lg px-3 py-2 text-sm font-medium ${activeTab === 'trips' ? 'bg-blue-500/20 text-blue-300' : 'text-white/50 hover:bg-white/5'}`}>Trip Chats</button>
+          <button onClick={() => { setActiveTab('personal'); setSelectedTrip(null); setSelectedDirectUser(null); }} className={`rounded-lg px-3 py-2 text-sm font-medium ${activeTab === 'personal' ? 'bg-blue-500/20 text-blue-300' : 'text-white/50 hover:bg-white/5'}`}>Personal Chats</button>
+        </div>
+
+        {/* Trip or personal conversation list */}
         <div className="flex-1 overflow-y-auto">
-          {filteredTrips.length === 0 ? (
+          {activeTab === 'personal' ? (
+            connectedUsers.filter(person => person.name.toLowerCase().includes(searchQuery.toLowerCase())).length === 0 ? (
+              <div className="p-8 text-center">
+                <Users className="w-8 h-8 text-white/15 mx-auto mb-3" />
+                <p className="text-sm text-white/50">No connected users yet</p>
+                <p className="text-xs text-white/30 mt-1">Accept a connection request to start a private chat.</p>
+                {directError && <p className="text-xs text-rose-300 mt-3">{directError}</p>}
+              </div>
+            ) : connectedUsers.filter(person => person.name.toLowerCase().includes(searchQuery.toLowerCase())).map(person => (
+              <button key={person._id} onClick={() => { setSelectedDirectUser(person); setSelectedTrip(null); setNewMessage(''); setDirectError(''); setShowEmojiPicker(false); }} className={`w-full p-4 flex items-center gap-3 border-b border-white/5 text-left hover:bg-white/[0.03] ${selectedDirectUser?._id === person._id ? 'bg-blue-500/10 border-l-2 border-l-blue-500' : ''}`}>
+                <span className={`w-11 h-11 rounded-full bg-gradient-to-br ${person.avatar || 'from-violet-400 to-blue-600'} flex items-center justify-center text-white font-semibold`}>{person.name?.charAt(0)?.toUpperCase() || '?'}</span>
+                <span className="flex-1 min-w-0"><span className="block text-sm font-semibold text-white truncate">{person.name}</span><span className="block text-xs text-white/40 mt-1">Connected · Personal chat</span></span>
+              </button>
+            ))
+          ) : filteredTrips.length === 0 ? (
             <div className="p-8 text-center">
               <MessageSquare className="w-8 h-8 text-white/15 mx-auto mb-3" />
               <p className="text-sm text-white/40">No trips yet</p>
@@ -126,8 +196,31 @@ export default function Chat({ user, onViewProfile, onNavigate }: ChatProps) {
       </div>
 
       {/* Chat Area */}
-      <div className={`${selectedTrip ? 'flex' : 'hidden lg:flex'} flex-col flex-1 bg-gradient-to-b from-slate-950 to-slate-900/50`}>
-        {selectedTrip ? (
+      <div className={`${(selectedTrip || selectedDirectUser) ? 'flex' : 'hidden lg:flex'} flex-col flex-1 bg-gradient-to-b from-slate-950 to-slate-900/50`}>
+        {selectedDirectUser ? (
+          <>
+            <div className="p-4 border-b border-white/5 flex items-center gap-3 glass-strong">
+              <button onClick={() => setSelectedDirectUser(null)} className="lg:hidden p-2 rounded-lg hover:bg-white/10"><ChevronLeft className="w-5 h-5" /></button>
+              <span className={`w-10 h-10 rounded-full bg-gradient-to-br ${selectedDirectUser.avatar || 'from-violet-400 to-blue-600'} flex items-center justify-center text-white font-semibold`}>{selectedDirectUser.name?.charAt(0)?.toUpperCase()}</span>
+              <div className="flex-1"><h3 className="text-sm font-semibold text-white">{selectedDirectUser.name}</h3><p className="text-xs text-emerald-300 mt-1">Connected · Private chat</p></div>
+            </div>
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              <div className="text-center text-xs text-white/30 py-3">Messages are private to you and {selectedDirectUser.name}</div>
+              {directError && <p className="text-center text-sm text-rose-300">{directError}</p>}
+              {directMessages.map(msg => { const own = String(msg.senderId) === String(user._id); return (
+                <div key={msg._id} className={`flex ${own ? 'justify-end' : 'justify-start'}`}><div className={`max-w-[80%] px-4 py-3 rounded-2xl text-sm ${own ? 'bg-gradient-to-br from-blue-500 to-blue-700 text-white rounded-br-md' : 'glass text-white/80 rounded-bl-md'}`}>{msg.content}<p className={`text-[10px] mt-1 ${own ? 'text-white/60 text-right' : 'text-white/30'}`}>{new Date(msg.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p></div></div>
+              ); })}
+              {directMessages.length === 0 && !directError && <div className="text-center text-sm text-white/40 mt-10">No messages yet. Say hello 👋</div>}
+              <div ref={messagesEndRef} />
+            </div>
+            {showEmojiPicker && <div className="px-4 pb-2"><div className="glass rounded-xl p-3 flex flex-wrap gap-1">{emojiList.map(emoji => <button key={emoji} onClick={() => addEmoji(emoji)} className="w-9 h-9 rounded-lg hover:bg-white/10 text-lg">{emoji}</button>)}</div></div>}
+            <div className="p-4 border-t border-white/5"><div className="flex items-center gap-2">
+              <button onClick={() => setShowEmojiPicker(!showEmojiPicker)} className="p-3 rounded-xl bg-white/5 text-white/50 hover:bg-white/10"><Smile className="w-5 h-5" /></button>
+              <input value={newMessage} onChange={e => setNewMessage(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') void sendDirectMessage(); }} placeholder="Type a message..." className="flex-1 min-w-0 px-4 py-3 rounded-xl bg-white/5 border border-white/10 text-white placeholder-white/30 focus:outline-none focus:border-blue-500/50 text-sm" />
+              <button disabled={!newMessage.trim() || sendingDirect} onClick={() => void sendDirectMessage()} className="p-3 rounded-xl bg-blue-600 text-white disabled:opacity-40"><Send className="w-5 h-5" /></button>
+            </div></div>
+          </>
+        ) : selectedTrip ? (
           <>
             {/* Chat Header */}
             <div className="p-4 border-b border-white/5 flex items-center gap-3 glass-strong">
@@ -294,8 +387,8 @@ export default function Chat({ user, onViewProfile, onNavigate }: ChatProps) {
               <div className="w-20 h-20 rounded-2xl glass-card flex items-center justify-center mx-auto mb-4">
                 <MessageSquare className="w-10 h-10 text-white/15" />
               </div>
-              <p className="text-lg font-semibold text-white/60">Select a trip</p>
-              <p className="text-sm text-white/30 mt-1">Choose a trip to start chatting with your travel group</p>
+              <p className="text-lg font-semibold text-white/60">Select a conversation</p>
+              <p className="text-sm text-white/30 mt-1">Choose a trip chat or a connected user chat</p>
             </div>
           </div>
         )}

@@ -241,7 +241,7 @@ export default function App() {
     const stored = db.authGetCurrentUser();
     if (stored) {
       setCurrentUser(stored);
-      setIsAdmin(adminService.isAdmin(stored.email));
+      setIsAdmin((stored as any)._isAdmin === true);
     }
     setUnreadNotifs(adminService.getUnreadCount());
 
@@ -257,13 +257,12 @@ export default function App() {
 
   const handleAuth = (user: UserType, password?: string) => {
     setCurrentUser(user);
-    // Only grant admin access if email matches AND password is correct
-    const isAdminEmail = adminService.isAdmin(user.email);
-    const isAdminPassword = password === adminService.ADMIN_PASSWORD;
-    setIsAdmin(isAdminEmail && isAdminPassword);
+    // The backend validates the admin email and returns this role in the signed-in response.
+    const serverConfirmedAdmin = (user as any)._isAdmin === true;
+    setIsAdmin(serverConfirmedAdmin);
     setShowAuth(false);
     setUnreadNotifs(adminService.getUnreadCount());
-    console.log('[Auth] Login successful:', { user: user.name, isAdmin: isAdminEmail && isAdminPassword });
+    console.log('[Auth] Login successful:', { user: user.name, isAdmin: serverConfirmedAdmin });
   };
 
   const handleLogout = () => {
@@ -273,9 +272,14 @@ export default function App() {
   };
 
   // If admin is logged in, show AdminPanel
-  if (isAdmin && currentUser) {
-    return <AdminPanel onLogout={handleLogout} />;
-  }
+ if (isAdmin && currentUser) {
+  return (
+    <AdminPanel
+      currentUser={currentUser}
+      onLogout={handleLogout}
+    />
+  );
+}
 
   return (
     <div className="min-h-screen bg-slate-950 text-white">

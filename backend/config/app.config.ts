@@ -38,8 +38,8 @@ export const EMAIL_DEFAULT_CONFIG = {
 
 /** Admin credentials — required to open the Admin Panel */
 export const ADMIN_CREDENTIALS = {
-  EMAIL: env('VITE_ADMIN_EMAIL', 'mohdairaz477@gmail.com'),
-  PASSWORD: env('VITE_ADMIN_PASSWORD', 'admin@8520'),
+  EMAIL: env('VITE_ADMIN_EMAIL', ''),
+  PASSWORD: '',
 };
 
 /** Site metadata */

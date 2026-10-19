@@ -3,13 +3,12 @@
   "version": "1.0.0",
   "description": "All server-side / data logic lives here. **No React, no JSX, no UI code.**",
   "main": "index.js",
-  
   "scripts": {
-  "dev": "tsx server.ts",
-  "start": "tsx server.ts",
-  "test": "echo \"Error: no test specified\" && exit 1"
-}
-,
+    "dev": "tsx watch server.ts",
+    "start": "tsx server.ts",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "check": "tsc --noEmit"
+  },
   "keywords": [],
   "author": "",
   "license": "ISC",
