@@ -34,7 +34,7 @@ export {
   locations,
 } from "../../backend";
 
-const API_URL = (import.meta.env.VITE_API_URL || "http://localhost:5000").replace(/\/$/, "");
+const API_URL = (import.meta.env.VITE_API_URL || "https://traveltogether-api-xjl2.onrender.com").replace(/\/$/, "");
 
 export async function registerWithMongoDB(data: {
   name: string;
